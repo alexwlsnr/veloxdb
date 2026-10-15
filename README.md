@@ -105,20 +105,37 @@ Watch the demo: **[veloxdb.dev](https://veloxdb.dev)**
 
 ## Installation
 
-### Download (macOS, Windows, Linux)
+### Homebrew (macOS)
 
-Download pre-built installers for the latest release (**v0.4.0**) on the **[Releases Page](https://github.com/abeni16/veloxdb/releases)**.
+Install VeloxDB with the official Homebrew tap:
+
+```bash
+brew trust --tap veloxbase/veloxdb
+brew install --cask veloxbase/veloxdb/veloxdb
+```
+
+Or tap the repository first and install:
+
+```bash
+brew tap veloxbase/veloxdb
+brew install --cask veloxdb
+```
+
+### Direct Download (macOS, Windows, Linux)
+
+Download pre-built installers for the latest release (**v0.4.0**) on the **[Releases Page](https://github.com/veloxbase/veloxdb/releases)**.
 
 | Platform | Package | Download Link |
 |----------|---------|---------------|
-| **macOS** | `.dmg` / `.app` | [Download macOS Release](https://github.com/abeni16/veloxdb/releases) |
-| **Linux** | `.AppImage` / `.deb` | [Download Linux Release](https://github.com/abeni16/veloxdb/releases) |
-| **Windows** | `.msi` / `.exe` | [Download Windows Release](https://github.com/abeni16/veloxdb/releases) |
+| **macOS** | `.dmg` / `.app` | [Download macOS Release](https://github.com/veloxbase/veloxdb/releases) |
+| **Linux** | `.AppImage` / `.deb` | [Download Linux Release](https://github.com/veloxbase/veloxdb/releases) |
+| **Windows** | `.msi` / `.exe` | [Download Windows Release](https://github.com/veloxbase/veloxdb/releases) |
 
-> **macOS Note:** If macOS shows a quarantine warning when opening the app, run the following command to lift the quarantine flag:
+> **macOS Note:** If installing via DMG directly and macOS displays a Gatekeeper quarantine warning, lift the quarantine flag with:
 > ```bash
 > xattr -cr /Applications/veloxdb.app
 > ```
+> *(The Homebrew cask removes the quarantine flag automatically during postflight).*
 
 ---
 
