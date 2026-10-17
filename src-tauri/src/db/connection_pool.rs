@@ -473,12 +473,31 @@ pub fn build_mongo_connection_string(input: &ConnectionInput) -> String {
     };
     let database = if input.database.is_empty() { "admin" } else { &input.database };
     uri.push_str(database);
-    if let Some(ref params) = input.extra_params {
-        let qs: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-        if !qs.is_empty() {
-            uri.push('?');
-            uri.push_str(&qs.join("&"));
-        }
+
+    let mut query_params: Vec<(String, String)> = input
+        .extra_params
+        .as_ref()
+        .map(|params| params.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    // A non-SRV deployment with sslMode=require needs TLS enabled explicitly.
+    // SRV URIs enable TLS by default, so only add the parameter when needed.
+    if !input.srv_enabled
+        && input.ssl_mode == ConnectionSslMode::Require
+        && !query_params.iter().any(|(key, _)| {
+            key.eq_ignore_ascii_case("tls") || key.eq_ignore_ascii_case("ssl")
+        })
+    {
+        query_params.push(("tls".to_string(), "true".to_string()));
+    }
+
+    if !query_params.is_empty() {
+        let qs: Vec<String> = query_params
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        uri.push('?');
+        uri.push_str(&qs.join("&"));
     }
     uri
 }
@@ -549,17 +568,35 @@ pub async fn get_or_create_duckdb_connection(
 pub fn build_redis_url(input: &ConnectionInput) -> String {
     let host = if input.host.is_empty() { "127.0.0.1" } else { &input.host };
     let port = if input.port == 0 { DEFAULT_REDIS_PORT } else { input.port };
-    if input.user.is_empty() {
-        format!("redis://{}:{}", host, port)
+    // Redis Cloud and other managed providers require TLS (rediss://). The
+    // redis crate is built without TLS at the moment, so requesting it fails
+    // loudly instead of silently downgrading to plaintext.
+    let scheme = match input.ssl_mode {
+        ConnectionSslMode::Require => "rediss",
+        _ => "redis",
+    };
+    let auth = if input.user.is_empty() {
+        if input.password.is_empty() {
+            String::new()
+        } else {
+            // Password-only auth (the ACL "default" user).
+            format!(":{}@", urlencoding::encode(&input.password))
+        }
     } else {
         format!(
-            "redis://{}:{}@{}:{}",
+            "{}:{}@",
             urlencoding::encode(&input.user),
             urlencoding::encode(&input.password),
-            host,
-            port,
         )
-    }
+    };
+    // The path selects the logical Redis database (SELECT <n>).
+    let database = input.database.trim();
+    let database_path = if database.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", urlencoding::encode(database))
+    };
+    format!("{}://{}{}:{}{}", scheme, auth, host, port, database_path)
 }
 
 pub async fn get_or_create_redis_client(
@@ -979,8 +1016,9 @@ pub fn load_connection(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_extra_params, build_mongo_connection_string, deadpool_ssl_mode, describe_pool_error,
-        mysql_url, ChannelBinding, DeadpoolSslMode, PoolError, PostgresConfig, TimeoutType,
+        apply_extra_params, build_mongo_connection_string, build_redis_url, deadpool_ssl_mode,
+        describe_pool_error, mysql_url, ChannelBinding, DeadpoolSslMode, PoolError, PostgresConfig,
+        TimeoutType,
     };
     use crate::models::{ConnectionInput, ConnectionSslMode, DatabaseEngine};
     use std::collections::HashMap;
@@ -1050,6 +1088,24 @@ mod tests {
             host: "localhost".to_string(),
             port: 27017,
             database: "admin".to_string(),
+            file_path: None,
+            user: String::new(),
+            password: String::new(),
+            srv_enabled: false,
+            ssl_mode: ConnectionSslMode::Disable,
+            ssh_config: None,
+            extra_params: None,
+        }
+    }
+
+    fn redis_input() -> ConnectionInput {
+        ConnectionInput {
+            id: None,
+            name: "test".to_string(),
+            engine: DatabaseEngine::Redis,
+            host: "127.0.0.1".to_string(),
+            port: 6379,
+            database: "0".to_string(),
             file_path: None,
             user: String::new(),
             password: String::new(),
@@ -1156,6 +1212,64 @@ mod tests {
         };
         let uri = build_mongo_connection_string(&input);
         assert!(uri.contains("localhost"));
+    }
+
+    #[test]
+    fn mongo_connection_requires_tls_when_requested() {
+        let input = ConnectionInput {
+            ssl_mode: ConnectionSslMode::Require,
+            ..mongo_input()
+        };
+        let uri = build_mongo_connection_string(&input);
+        assert!(uri.contains("?tls=true"), "unexpected URI: {uri}");
+
+        // Explicit extra params win over the implicit tls=true.
+        let mut params = HashMap::new();
+        params.insert("tls".to_string(), "false".to_string());
+        let input = ConnectionInput {
+            ssl_mode: ConnectionSslMode::Require,
+            extra_params: Some(params),
+            ..mongo_input()
+        };
+        let uri = build_mongo_connection_string(&input);
+        assert_eq!(uri.matches("tls=").count(), 1, "unexpected URI: {uri}");
+        assert!(uri.contains("tls=false"));
+    }
+
+    #[test]
+    fn redis_url_includes_database_and_optional_auth() {
+        assert_eq!(build_redis_url(&redis_input()), "redis://127.0.0.1:6379/0");
+
+        let input = ConnectionInput {
+            database: "3".to_string(),
+            ..redis_input()
+        };
+        assert_eq!(build_redis_url(&input), "redis://127.0.0.1:6379/3");
+
+        // Password-only auth (ACL default user) must not be dropped.
+        let input = ConnectionInput {
+            password: "secret".to_string(),
+            ..redis_input()
+        };
+        assert_eq!(build_redis_url(&input), "redis://:secret@127.0.0.1:6379/0");
+
+        let input = ConnectionInput {
+            user: "alice".to_string(),
+            password: "p@ss".to_string(),
+            database: "1".to_string(),
+            ..redis_input()
+        };
+        assert_eq!(
+            build_redis_url(&input),
+            "redis://alice:p%40ss@127.0.0.1:6379/1"
+        );
+
+        // Managed Redis requires TLS; do not silently downgrade to plaintext.
+        let input = ConnectionInput {
+            ssl_mode: ConnectionSslMode::Require,
+            ..redis_input()
+        };
+        assert!(build_redis_url(&input).starts_with("rediss://"));
     }
 
     #[test]

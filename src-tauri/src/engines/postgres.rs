@@ -103,18 +103,26 @@ impl DatabaseEngineOps for PostgresEngine {
             let mut rows = Vec::new();
             let mut total_rows = 0usize;
             let mut command_tag = None;
+            let mut saw_row_description = false;
 
             for message in messages {
                 match message {
                     SimpleQueryMessage::RowDescription(description) => {
-                        if columns.is_empty() {
-                            columns = description.iter()
-                                .map(|column| column.name().to_string()).collect();
+                        // A script can return several result sets. Keep the last
+                        // one instead of mapping later rows onto earlier columns.
+                        if saw_row_description {
+                            columns.clear();
+                            rows.clear();
+                            total_rows = 0;
                         }
+                        saw_row_description = true;
+                        columns = description.iter()
+                            .map(|column| column.name().to_string()).collect();
                     }
                     SimpleQueryMessage::Row(row) => {
                         total_rows += 1;
-                        if columns.is_empty() {
+                        if !saw_row_description {
+                            saw_row_description = true;
                             columns = row.columns().iter()
                                 .map(|column| column.name().to_string()).collect();
                         }

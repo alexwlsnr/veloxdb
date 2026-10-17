@@ -246,8 +246,14 @@ export function buildConnectionString(fields: {
   if (fields.engine === 'redis') {
     const encodedUser = fields.user ? encodeURIComponent(fields.user) : ''
     const encodedPassword = fields.password ? `:${encodeURIComponent(fields.password)}` : ''
-    const auth = encodedUser ? `${encodedUser}${encodedPassword}@` : ''
-    return `redis://${auth}${fields.host || '127.0.0.1'}:${fields.port || 6379}/${encodeURIComponent(fields.database || '0')}`
+    // Password-only auth (ACL "default" user) uses the `:password@` form.
+    const auth = encodedUser
+      ? `${encodedUser}${encodedPassword}@`
+      : fields.password
+        ? `:${encodeURIComponent(fields.password)}@`
+        : ''
+    const scheme = fields.sslMode === 'require' ? 'rediss' : 'redis'
+    return `${scheme}://${auth}${fields.host || '127.0.0.1'}:${fields.port || 6379}/${encodeURIComponent(fields.database || '0')}`
   }
 
   if (fields.engine === 'duckdb') {

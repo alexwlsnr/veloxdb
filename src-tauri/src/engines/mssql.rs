@@ -19,7 +19,27 @@ use super::DatabaseEngineOps;
 
 pub struct MssqlEngine;
 
-fn build_tiberius_config(cfg: &MssqlConfig) -> Result<Config, VeloxError> {
+/// Map the UI TLS mode onto tiberius' wire-level encryption levels.
+///
+/// `EncryptionLevel::Off` is *not* "no TLS": tiberius uses it for TDS
+/// ENCRYPT_OFF, which still performs a TLS handshake for the login packet.
+/// Servers without TLS (the common `forceencryption = 0` setup) reject that
+/// handshake, so `disable` must request ENCRYPT_NOT_SUP (`NotSupported`).
+fn encryption_level(cfg: &MssqlConfig) -> EncryptionLevel {
+    if cfg.is_azure {
+        return EncryptionLevel::Required;
+    }
+    match cfg.ssl_mode {
+        ConnectionSslMode::Disable => EncryptionLevel::NotSupported,
+        ConnectionSslMode::Prefer => EncryptionLevel::Off,
+        ConnectionSslMode::Require => EncryptionLevel::Required,
+    }
+}
+
+fn build_tiberius_config(
+    cfg: &MssqlConfig,
+    level: EncryptionLevel,
+) -> Result<Config, VeloxError> {
     let mut config = Config::new();
     config.host(&cfg.host);
     config.port(cfg.port);
@@ -27,17 +47,21 @@ fn build_tiberius_config(cfg: &MssqlConfig) -> Result<Config, VeloxError> {
     if !cfg.database.is_empty() {
         config.database(&cfg.database);
     }
-    if cfg.is_azure || cfg.ssl_mode == ConnectionSslMode::Require {
-        config.encryption(EncryptionLevel::Required);
+    config.encryption(level);
+    if level != EncryptionLevel::NotSupported {
+        // There is no certificate UI yet, and SQL Server commonly ships with a
+        // self-signed certificate. Without this every encrypted connection
+        // fails during the TLS handshake.
         config.trust_cert();
-    } else {
-        config.encryption(EncryptionLevel::Off);
     }
     Ok(config)
 }
 
-async fn connect_client(cfg: &MssqlConfig) -> Result<Client<Compat<TcpStream>>, VeloxError> {
-    let t_cfg = build_tiberius_config(cfg)?;
+async fn try_connect(
+    cfg: &MssqlConfig,
+    level: EncryptionLevel,
+) -> Result<Client<Compat<TcpStream>>, VeloxError> {
+    let t_cfg = build_tiberius_config(cfg, level)?;
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let tcp = TcpStream::connect(&addr).await
         .map_err(|e| VeloxError::Connection(format!("MSSQL connection to {} failed: {}", addr, e)))?;
@@ -45,6 +69,23 @@ async fn connect_client(cfg: &MssqlConfig) -> Result<Client<Compat<TcpStream>>, 
     let client = Client::connect(t_cfg, tcp.compat_write()).await
         .map_err(|e| VeloxError::Connection(format!("MSSQL TDS handshake failed: {}", e)))?;
     Ok(client)
+}
+
+async fn connect_client(cfg: &MssqlConfig) -> Result<Client<Compat<TcpStream>>, VeloxError> {
+    let level = encryption_level(cfg);
+    match try_connect(cfg, level).await {
+        Ok(client) => Ok(client),
+        // `prefer` means "TLS when the server supports it". tiberius cannot
+        // negotiate that fallback itself, so retry without encryption when the
+        // TLS handshake fails (common on private servers with forceencryption=0).
+        Err(error) if cfg.ssl_mode == ConnectionSslMode::Prefer && !cfg.is_azure => {
+            match try_connect(cfg, EncryptionLevel::NotSupported).await {
+                Ok(client) => Ok(client),
+                Err(_) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn get_or_create_mssql_config(
@@ -336,5 +377,61 @@ impl DatabaseEngineOps for MssqlEngine {
             }
         }
         Ok(databases)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encryption_level;
+    use crate::db::MssqlConfig;
+    use crate::models::ConnectionSslMode;
+    use tiberius::EncryptionLevel;
+
+    fn config(ssl_mode: ConnectionSslMode) -> MssqlConfig {
+        MssqlConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1433,
+            user: "sa".to_string(),
+            password: "secret".to_string(),
+            database: "master".to_string(),
+            is_azure: false,
+            ssl_mode,
+        }
+    }
+
+    #[test]
+    fn disable_turns_tls_off_entirely() {
+        // ENCRYPT_NOT_SUP: no TLS handshake at all. ENCRYPT_OFF would still
+        // handshake for the login packet and fail on servers without TLS.
+        assert_eq!(
+            encryption_level(&config(ConnectionSslMode::Disable)) as u8,
+            EncryptionLevel::NotSupported as u8
+        );
+    }
+
+    #[test]
+    fn prefer_encrypts_the_login_only() {
+        assert_eq!(
+            encryption_level(&config(ConnectionSslMode::Prefer)) as u8,
+            EncryptionLevel::Off as u8
+        );
+    }
+
+    #[test]
+    fn require_encrypts_everything() {
+        assert_eq!(
+            encryption_level(&config(ConnectionSslMode::Require)) as u8,
+            EncryptionLevel::Required as u8
+        );
+    }
+
+    #[test]
+    fn azure_always_requires_tls() {
+        let mut cfg = config(ConnectionSslMode::Disable);
+        cfg.is_azure = true;
+        assert_eq!(
+            encryption_level(&cfg) as u8,
+            EncryptionLevel::Required as u8
+        );
     }
 }

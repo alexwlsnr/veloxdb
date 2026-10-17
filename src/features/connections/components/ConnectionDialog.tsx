@@ -362,7 +362,10 @@ export function ConnectionDialog({ open, onOpenChange, onSubmit, isPending = fal
       filePath: values.filePath || null,
       user: cfg.showFilePicker ? '' : values.user,
       password: cfg.showFilePicker ? '' : values.password,
-      sslMode: isSqlEngine ? values.sslMode : 'disable',
+      // Keep the TLS choice for every engine that supports it (PostgreSQL,
+      // MySQL, ClickHouse, SQL Server, Azure SQL). Bare MongoDB/Redis
+      // connection strings also carry their TLS mode through this field.
+      sslMode: values.sslMode,
       srvEnabled: values.engine === 'mongo' ? (values.srv ?? false) : false,
       extraParams: isSqlEngine && Object.keys(extraParams).length > 0 ? extraParams : null,
       sshConfig: !cfg.showFilePicker && values.sshEnabled ? {

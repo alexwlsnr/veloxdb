@@ -796,17 +796,22 @@ export const QueryWorkspace = forwardRef<
 				onRequestConnection();
 				return;
 			}
+			const allowWrite = !isReadOnlySql(trimmed, connectionEngine ?? undefined);
+			if (allowWrite && !window.confirm(t("editor.confirmWrite"))) {
+				return;
+			}
 			const flightId = tab.explainFlightId + 1;
 			dispatch({ type: "explainStart", tabId, flightId });
 			explainPlanMutation.mutate({
 				connectionId: targetId,
 				engine: connectionEngine ?? "postgres",
 				sql: trimmed,
+				allowWrite,
 				tabId,
 				flightId,
 			});
 		},
-		[connectionId, connectionEngine, onRequestConnection, explainPlanMutation],
+		[connectionId, connectionEngine, onRequestConnection, explainPlanMutation, t],
 	);
 
 	useImperativeHandle(
@@ -867,7 +872,7 @@ export const QueryWorkspace = forwardRef<
 				runQueryMutation.mutate({
 					connectionId: targetId,
 					sql: trimmed,
-					allowWrite: !isReadOnlySql(trimmed),
+					allowWrite: !isReadOnlySql(trimmed, connectionEngine ?? undefined),
 					tabId,
 					flightId,
 				});
