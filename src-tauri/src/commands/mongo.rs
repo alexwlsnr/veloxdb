@@ -313,11 +313,23 @@ pub async fn mongo_get_collections(
 
     Ok(names
         .into_iter()
-        .map(|name| TableInfo {
-            schema: db_name.clone(),
-            name: name.clone(),
-            preview_query: format!("db.{}.find({{}}).limit(100)", name),
-            kind: Some("table".to_string()),
+        .map(|name| {
+            let reference = if !name.is_empty()
+                && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                format!("db.{}", name)
+            } else {
+                format!(
+                    "db.getCollection(\"{}\")",
+                    name.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            };
+            TableInfo {
+                schema: db_name.clone(),
+                name: name.clone(),
+                preview_query: format!("{}.find({{}}).limit(100)", reference),
+                kind: Some("table".to_string()),
+            }
         })
         .collect())
 }

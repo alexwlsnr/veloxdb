@@ -13,6 +13,115 @@ use super::DatabaseEngineOps;
 
 pub struct DuckdbEngine;
 
+fn format_timestamp(unit: duckdb::types::TimeUnit, value: i64) -> String {
+    use chrono::{DateTime, Utc};
+    use duckdb::types::TimeUnit;
+    let millis = match unit {
+        TimeUnit::Second => value.saturating_mul(1_000),
+        TimeUnit::Millisecond => value,
+        TimeUnit::Microsecond => value.div_euclid(1_000),
+        TimeUnit::Nanosecond => value.div_euclid(1_000_000),
+    };
+    DateTime::<Utc>::from_timestamp_millis(millis)
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn format_date32(days: i32) -> String {
+    use chrono::{Duration, NaiveDate};
+    NaiveDate::from_ymd_opt(1970, 1, 1)
+        .and_then(|epoch| epoch.checked_add_signed(Duration::days(days as i64)))
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| days.to_string())
+}
+
+fn format_time64(unit: duckdb::types::TimeUnit, value: i64) -> String {
+    use duckdb::types::TimeUnit;
+    let micros = match unit {
+        TimeUnit::Second => value.saturating_mul(1_000_000),
+        TimeUnit::Millisecond => value.saturating_mul(1_000),
+        TimeUnit::Microsecond => value,
+        TimeUnit::Nanosecond => value.div_euclid(1_000),
+    };
+    let seconds = micros.div_euclid(1_000_000);
+    let fraction = micros.rem_euclid(1_000_000);
+    format!(
+        "{:02}:{:02}:{:02}.{:06}",
+        seconds / 3_600,
+        (seconds / 60) % 60,
+        seconds % 60,
+        fraction
+    )
+}
+
+fn duckdb_value_to_string(value: duckdb::types::Value) -> Option<String> {
+    use duckdb::types::{OrderedMap, Value};
+    fn list_to_string(items: Vec<Value>) -> String {
+        format!(
+            "[{}]",
+            items
+                .into_iter()
+                .map(|item| duckdb_value_to_string(item).unwrap_or_else(|| "NULL".to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+    fn map_to_string(map: OrderedMap<String, Value>) -> String {
+        format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(key, item)| format!(
+                    "{}: {}",
+                    key,
+                    duckdb_value_to_string(item.clone()).unwrap_or_else(|| "NULL".to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
+    match value {
+        Value::Null => None,
+        Value::Boolean(v) => Some(v.to_string()),
+        Value::TinyInt(v) => Some(v.to_string()),
+        Value::SmallInt(v) => Some(v.to_string()),
+        Value::Int(v) => Some(v.to_string()),
+        Value::BigInt(v) => Some(v.to_string()),
+        Value::HugeInt(v) => Some(v.to_string()),
+        Value::UTinyInt(v) => Some(v.to_string()),
+        Value::USmallInt(v) => Some(v.to_string()),
+        Value::UInt(v) => Some(v.to_string()),
+        Value::UBigInt(v) => Some(v.to_string()),
+        Value::Float(v) => Some(v.to_string()),
+        Value::Double(v) => Some(v.to_string()),
+        Value::Decimal(v) => Some(v.to_string()),
+        Value::Text(v) => Some(v),
+        Value::Blob(bytes) => Some(format!("0x{}", hex::encode(bytes))),
+        Value::Timestamp(unit, value) => Some(format_timestamp(unit, value)),
+        Value::Date32(days) => Some(format_date32(days)),
+        Value::Time64(unit, value) => Some(format_time64(unit, value)),
+        Value::Interval { months, days, nanos } => {
+            Some(format!("{} months {} days {} ns", months, days, nanos))
+        }
+        Value::List(items) | Value::Array(items) => Some(list_to_string(items)),
+        Value::Enum(v) => Some(v),
+        Value::Struct(map) => Some(map_to_string(map)),
+        Value::Map(map) => Some(format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(key, item)| format!(
+                    "{}: {}",
+                    duckdb_value_to_string(key.clone()).unwrap_or_else(|| "NULL".to_string()),
+                    duckdb_value_to_string(item.clone()).unwrap_or_else(|| "NULL".to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        Value::Union(inner) => duckdb_value_to_string(*inner),
+    }
+}
+
+
 impl DatabaseEngineOps for DuckdbEngine {
     async fn connect(
         &self,
@@ -59,13 +168,12 @@ impl DatabaseEngineOps for DuckdbEngine {
             .ok_or_else(|| VeloxError::Connection("DuckDB connection not found".to_string()))?;
         let conn = conn_mutex.lock().await;
 
-        let is_select = sql.trim().to_uppercase().starts_with("SELECT")
-            || sql.trim().to_uppercase().starts_with("WITH");
+        let is_row_returning = crate::commands::is_row_returning_sql(sql);
 
         let started_at = Instant::now();
 
-        if is_select {
-            let stmt = conn.prepare(sql)
+        if is_row_returning {
+            let mut stmt = conn.prepare(sql)
                 .map_err(|e| VeloxError::Query(e.to_string()))?;
             let col_count = stmt.column_count();
             let columns: Vec<String> = (0..col_count)
@@ -73,12 +181,10 @@ impl DatabaseEngineOps for DuckdbEngine {
                 .collect();
 
             let mut rows = Vec::new();
-            let mut stmt = conn.prepare(sql)
-                .map_err(|e| VeloxError::Query(e.to_string()))?;
             let results = stmt.query_map([], |row| {
-                let vals: Vec<Option<String>> = (0..col_count).map(|i| {
-                    row.get::<_, Option<String>>(i).ok().flatten()
-                }).collect();
+                let vals: Vec<Option<String>> = (0..col_count)
+                    .map(|i| row.get::<_, duckdb::types::Value>(i).ok().and_then(duckdb_value_to_string))
+                    .collect();
                 Ok(vals)
             }).map_err(|e| VeloxError::Query(e.to_string()))?;
 
@@ -190,5 +296,47 @@ impl DatabaseEngineOps for DuckdbEngine {
         _connection_id: &str,
     ) -> Result<Vec<DatabaseInfo>, VeloxError> {
         Ok(vec![DatabaseInfo { name: "main".to_string() }])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duckdb_value_to_string;
+    use duckdb::types::Value;
+
+    #[test]
+    fn renders_null_as_none() {
+        assert_eq!(duckdb_value_to_string(Value::Null), None);
+    }
+
+    #[test]
+    fn renders_numeric_and_text_values() {
+        assert_eq!(duckdb_value_to_string(Value::Int(42)), Some("42".to_string()));
+        assert_eq!(duckdb_value_to_string(Value::UBigInt(7)), Some("7".to_string()));
+        assert_eq!(
+            duckdb_value_to_string(Value::Text("hello".to_string())),
+            Some("hello".to_string())
+        );
+        assert_eq!(duckdb_value_to_string(Value::Boolean(true)), Some("true".to_string()));
+    }
+
+    #[test]
+    fn renders_blobs_as_hex() {
+        assert_eq!(
+            duckdb_value_to_string(Value::Blob(vec![0xde, 0xad])),
+            Some("0xdead".to_string())
+        );
+    }
+
+    #[test]
+    fn renders_lists_and_structs() {
+        assert_eq!(
+            duckdb_value_to_string(Value::List(vec![Value::Int(1), Value::Int(2)])),
+            Some("[1, 2]".to_string())
+        );
+        let nested = Value::Struct(
+            vec![("name".to_string(), Value::Text("bob".to_string()))].into(),
+        );
+        assert_eq!(duckdb_value_to_string(nested), Some("{name: bob}".to_string()));
     }
 }

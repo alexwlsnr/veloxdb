@@ -14,6 +14,7 @@ import { ModelCatalog } from '@/features/model/components/ModelCatalog';
 import { ModelInspector } from '@/features/model/components/ModelInspector';
 import { ModelWorkspaceToolbar } from '@/features/model/components/ModelWorkspaceToolbar';
 import { MigrationPreviewDialog } from '@/features/model/components/MigrationPreviewDialog';
+import { buildMigrationSql, buildMigrationSummary } from '@/features/model/migration-preview';
 import { defaultDiagramHeaderHex as distinctDiagramHeaderHex } from '@/features/model/diagram-header-palette';
 import { readDiagramPalette } from '@/features/model/diagram-theme';
 import { useModelColumns } from '@/features/model/hooks/useModelColumns';
@@ -175,26 +176,35 @@ export function ModelWorkspace({
 		return tablesByKey.get(store.primaryKey) ?? null;
 	}, [store.primaryKey, tablesByKey]);
 
-	const isModelDirty = useMemo(() => {
-		if (store.pendingForeignKeys.length > 0) return true;
-		if (store.pendingCreateTables.length > 0) return true;
-		for (const k of store.onCanvas) {
-			const t = tablesByKey.get(k);
-			if (!t) continue;
-			const id = store.identityDraftByKey[k];
-			if (id && (id.schema !== t.schema || id.name !== t.name)) return true;
-			const co = store.columnOverridesByKey[k];
-			if (co && Object.keys(co).length > 0) return true;
-			const cio = store.columnIdentityOverridesByKey[k];
-			if (cio && Object.keys(cio).length > 0) return true;
-			const adds = store.pendingAddColumnsByKey[k];
-			if (adds && adds.length > 0) return true;
-		}
-		if (store.pendingRules.length > 0 || store.pendingTriggers.length > 0 || store.pendingRlsPolicies.length > 0) return true;
-		return false;
-	}, [store.onCanvas, tablesByKey, store.identityDraftByKey, store.columnOverridesByKey,
+	// The migration preview renders the pending model changes. Without this the
+	// dialog always showed "No pending changes" and Apply stayed disabled.
+	const migrationSummary = useMemo(() => buildMigrationSummary({
+		onCanvas: store.onCanvas,
+		tablesByKey,
+		identityDraftByKey: store.identityDraftByKey,
+		columnOverridesByKey: store.columnOverridesByKey,
+		columnIdentityOverridesByKey: store.columnIdentityOverridesByKey,
+		pendingAddColumnsByKey: store.pendingAddColumnsByKey,
+		pendingForeignKeys: store.pendingForeignKeys,
+		pendingRules: store.pendingRules,
+		pendingTriggers: store.pendingTriggers,
+		pendingRlsPolicies: store.pendingRlsPolicies,
+		pendingCreateTables: store.pendingCreateTables,
+	}), [store.onCanvas, tablesByKey, store.identityDraftByKey, store.columnOverridesByKey,
 		store.columnIdentityOverridesByKey, store.pendingAddColumnsByKey, store.pendingForeignKeys,
-		store.pendingCreateTables, store.pendingRules.length, store.pendingTriggers.length, store.pendingRlsPolicies.length]);
+		store.pendingRules, store.pendingTriggers, store.pendingRlsPolicies, store.pendingCreateTables]);
+	const hasPendingChanges = migrationSummary.changes.length > 0;
+
+	const handleDownloadSql = useCallback(() => {
+		if (migrationSummary.changes.length === 0) return;
+		const blob = new Blob([buildMigrationSql(migrationSummary)], { type: 'text/plain' });
+		const url = URL.createObjectURL(blob);
+		const anchor = document.createElement('a');
+		anchor.href = url;
+		anchor.download = `migration_${new Date().toISOString().replace(/[:.]+/g, '-').slice(0, 19)}.sql`;
+		anchor.click();
+		URL.revokeObjectURL(url);
+	}, [migrationSummary]);
 
 	const catalogTablesSorted = useMemo(() => [...tables].sort((a, b) => tableKey(a).localeCompare(tableKey(b))), [tables]);
 
@@ -421,6 +431,7 @@ export function ModelWorkspace({
 			void queryClient.invalidateQueries({ queryKey: ['schema'] });
 			void queryClient.invalidateQueries({ queryKey: ['tableProperties'] });
 			void queryClient.invalidateQueries({ queryKey: ['tableIndexes'] });
+			setMigrationPreviewOpen(false);
 		} catch (err) {
 			setApplyError(err instanceof Error ? err.message : 'Failed to apply model');
 		} finally { setApplyPending(false); }
@@ -436,20 +447,6 @@ export function ModelWorkspace({
 	if (tablesErrorMessage) {
 		return <div className="flex flex-1 items-center justify-center px-4 text-center text-xs text-destructive">{tablesErrorMessage}</div>;
 	}
-	if (!isTablesLoading && tables.length === 0) {
-		return (
-			<div className="flex flex-1 items-center justify-center px-4">
-				<div className="max-w-sm rounded-md border border-border/80 bg-background/90 px-5 py-4 text-center shadow-sm">
-					<p className="text-sm font-medium text-foreground">{t('model.noTablesYet')}</p>
-					<p className="mt-1.5 text-xs text-muted-foreground">This database has no tables.</p>
-					<div className="mt-4 flex items-center justify-center gap-2">
-						<Button type="button" variant="default" size="sm" className="text-xs" onClick={() => setCreateTableOpen(true)}>{t('model.createTable')}</Button>
-						<Button type="button" variant="outline" size="sm" className="text-xs" onClick={() => setDdlOpen(true)}>{t('model.runDdlScript')}</Button>
-					</div>
-				</div>
-			</div>
-		);
-	}
 
 	return (
 		<div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -464,8 +461,8 @@ export function ModelWorkspace({
 					</div>
 				</div>
 				<div className="flex shrink-0 flex-wrap items-center gap-2">
-					<Button type="button" size="sm" className="h-8 text-xs" disabled={!isModelDirty} onClick={() => setMigrationPreviewOpen(true)}>{t('model.reviewAndApply')}</Button>
-					<Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={!isModelDirty} onClick={() => {}}>
+					<Button type="button" size="sm" className="h-8 text-xs" disabled={!hasPendingChanges} onClick={() => setMigrationPreviewOpen(true)}>{t('model.reviewAndApply')}</Button>
+					<Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={!hasPendingChanges} onClick={handleDownloadSql}>
 						{t('model.downloadSql')}
 					</Button>
 					<Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => setDdlOpen(true)}>{t('model.runDdlScript')}</Button>
@@ -510,7 +507,7 @@ export function ModelWorkspace({
 						</div>
 
 						<div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-							<div ref={diagramWrapRef} className="min-h-0 min-w-0 flex-1 overflow-hidden contain-[layout_paint]">
+							<div ref={diagramWrapRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden contain-[layout_paint]">
 								<DiagramSurfaceAdapter
 									isDark={isDark}
 									connectionEngine={connectionEngine}
@@ -542,6 +539,25 @@ export function ModelWorkspace({
 									columnDetail={store.columnDetail}
 									diagramGroups={store.diagramGroups}
 								/>
+								{tables.length === 0 && !isTablesLoading && (
+									<div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4">
+										<div className="pointer-events-auto max-w-sm rounded-md border border-border/80 bg-background/95 px-5 py-4 text-center shadow-sm">
+											<p className="text-sm font-medium text-foreground">{t('model.noTablesYet')}</p>
+											<p className="mt-1.5 text-xs text-muted-foreground">
+												{store.pendingCreateTables.length > 0
+													? `${store.pendingCreateTables.length} table(s) waiting to be created. Review and apply the migration to create them.`
+													: 'This database has no tables.'}
+											</p>
+											<div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+												<Button type="button" variant="default" size="sm" className="text-xs" onClick={() => setCreateTableOpen(true)}>{t('model.createTable')}</Button>
+												<Button type="button" variant="outline" size="sm" className="text-xs" onClick={() => setDdlOpen(true)}>{t('model.runDdlScript')}</Button>
+												{store.pendingCreateTables.length > 0 && (
+													<Button type="button" variant="outline" size="sm" className="text-xs" onClick={() => setMigrationPreviewOpen(true)}>{t('model.reviewAndApply')}</Button>
+												)}
+											</div>
+										</div>
+									</div>
+								)}
 							</div>
 						{inspectorTable && (
 							<ModelInspector
@@ -692,7 +708,7 @@ export function ModelWorkspace({
 
 			<DdlReviewDialog open={ddlOpen} onOpenChange={setDdlOpen} connectionId={connectionId} engine={connectionEngine} />
 			<CreateTableDialog open={createTableOpen} onOpenChange={setCreateTableOpen} onCommit={(ct) => store.setPendingCreateTables((prev) => [...prev, ct])} />
-			<MigrationPreviewDialog open={migrationPreviewOpen} onOpenChange={setMigrationPreviewOpen} summary={null} onApply={handleApplyEntireModel} isApplying={applyPending} />
+			<MigrationPreviewDialog open={migrationPreviewOpen} onOpenChange={setMigrationPreviewOpen} summary={migrationSummary} onApply={handleApplyEntireModel} isApplying={applyPending} />
 		</div>
 	);
 }

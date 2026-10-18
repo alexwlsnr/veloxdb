@@ -35,6 +35,7 @@ type MigrationPreviewDialogProps = {
 const kindIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   add_column: CubeIcon,
   add_foreign_key: LinkSimpleIcon,
+  create_table: CubeIcon,
   rename_table: PencilSimpleIcon,
   column_identity_change: ArrowsClockwiseIcon,
   column_override: PencilSimpleIcon,
@@ -57,6 +58,7 @@ export function MigrationPreviewDialog({
   const kindLabels: Record<string, string> = {
     add_column: t("model.addColumn"),
     add_foreign_key: t("model.foreignKey"),
+    create_table: t("model.createTable"),
     rename_table: t("model.renameTable"),
     column_identity_change: t("model.columnChange"),
     column_override: t("model.columnConstraint"),

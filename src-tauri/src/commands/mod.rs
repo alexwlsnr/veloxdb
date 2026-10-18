@@ -258,7 +258,36 @@ pub(crate) fn classify_sql_intent(sql: &str) -> String {
     if normalized.starts_with("explain") {
         return "explain".to_string();
     }
+    if normalized.starts_with("show") {
+        return "show".to_string();
+    }
+    if normalized.starts_with("describe") || normalized.starts_with("desc") {
+        return "describe".to_string();
+    }
+    if normalized.starts_with("values") {
+        return "values".to_string();
+    }
+    if normalized.starts_with("table ") {
+        return "table".to_string();
+    }
     "unknown".to_string()
+}
+
+/// Keywords that can appear after a `WITH` clause and still modify data.
+/// A data-modifying CTE (`WITH x AS (INSERT ...) SELECT ...`) starts with
+/// `WITH`, so it must not be treated as read-only just because of its prefix.
+const WRITE_KEYWORDS: [&str; 14] = [
+    "insert", "update", "delete", "merge",
+    "create", "alter", "drop", "truncate",
+    "grant", "revoke", "copy", "call", "do", "vacuum",
+];
+
+fn contains_write_keyword(sql: &str) -> bool {
+    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|token| {
+            let lower = token.to_ascii_lowercase();
+            WRITE_KEYWORDS.iter().any(|keyword| lower == *keyword)
+        })
 }
 
 pub(crate) fn is_read_only_sql(sql: &str) -> bool {
@@ -272,12 +301,62 @@ pub(crate) fn is_read_only_sql(sql: &str) -> bool {
             continue;
         }
         saw_statement = true;
-        match classify_sql_intent(statement).as_str() {
-            "select" | "explain" => {}
-            _ => return false,
+        let intent = classify_sql_intent(statement);
+        let read_only = match intent.as_str() {
+            "select" => {
+                // WITH-prefixed statements can be data-modifying CTEs.
+                !normalized.starts_with("with") || !contains_write_keyword(statement)
+            }
+            "explain" => {
+                // EXPLAIN ANALYZE actually executes the statement it explains.
+                !contains_write_keyword(statement)
+            }
+            "show" | "describe" | "values" | "table" => true,
+            _ => false,
+        };
+        if !read_only {
+            return false;
         }
     }
     saw_statement
+}
+
+/// Redis commands that never modify the keyspace. Anything not listed here is
+/// treated as a write so the editor asks for confirmation before running it.
+/// Keep in sync with `REDIS_READ_ONLY_COMMANDS` in `src/lib/sql-intent.ts`.
+const REDIS_READ_ONLY_COMMANDS: &[&str] = &[
+    "PING", "ECHO", "TYPE", "EXISTS", "TTL", "PTTL", "EXPIRETIME", "PEXPIRETIME",
+    "KEYS", "SCAN", "RANDOMKEY", "DBSIZE",
+    "GET", "MGET", "GETRANGE", "STRLEN", "SUBSTR", "BITCOUNT", "BITPOS", "BITFIELD_RO",
+    "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS", "HRANDFIELD", "HSCAN",
+    "LINDEX", "LRANGE", "LLEN", "LPOS",
+    "SMEMBERS", "SCARD", "SISMEMBER", "SMISMEMBER", "SRANDMEMBER", "SSCAN",
+    "ZCARD", "ZCOUNT", "ZDIFF", "ZINTER", "ZUNION", "ZINTERCARD", "ZLEXCOUNT",
+    "ZMSCORE", "ZRANDMEMBER", "ZRANGE", "ZRANGEBYLEX", "ZRANGEBYSCORE", "ZRANK",
+    "ZREVRANGE", "ZREVRANGEBYLEX", "ZREVRANGEBYSCORE", "ZREVRANK", "ZSCAN", "ZSCORE",
+    "XINFO", "XLEN", "XRANGE", "XREVRANGE", "XPENDING", "XREAD",
+    "GEODIST", "GEOHASH", "GEOPOS", "GEORADIUS_RO", "GEORADIUSBYMEMBER_RO", "GEOSEARCH",
+    "PFCOUNT", "INFO", "TIME", "LASTSAVE", "COMMAND", "MEMORY", "OBJECT", "SORT_RO",
+];
+
+/// True when every non-empty line is a read-only Redis command.
+pub(crate) fn is_read_only_redis_command(sql: &str) -> bool {
+    let mut saw_command = false;
+    for line in sql.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        saw_command = true;
+        let command = line
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if !REDIS_READ_ONLY_COMMANDS.iter().any(|allowed| *allowed == command) {
+            return false;
+        }
+    }
+    saw_command
 }
 
 pub(crate) fn has_multiple_statements(sql: &str) -> bool {
@@ -987,3 +1066,61 @@ pub use redis::{
 pub use updater::{
     check_for_updates,
 };
+
+#[cfg(test)]
+mod sql_intent_tests {
+    use super::{classify_sql_intent, is_read_only_redis_command, is_read_only_sql};
+
+    #[test]
+    fn classifies_read_only_statement_kinds() {
+        assert_eq!(classify_sql_intent("SELECT 1"), "select");
+        assert_eq!(classify_sql_intent("SHOW TABLES"), "show");
+        assert_eq!(classify_sql_intent("DESCRIBE users"), "describe");
+        assert_eq!(classify_sql_intent("DESC users"), "describe");
+        assert_eq!(classify_sql_intent("VALUES (1)"), "values");
+        assert_eq!(classify_sql_intent("TABLE users"), "table");
+        assert_eq!(classify_sql_intent("EXPLAIN SELECT 1"), "explain");
+        assert_eq!(classify_sql_intent("DROP TABLE t"), "unknown");
+    }
+
+    #[test]
+    fn read_only_sql_accepts_read_only_statements() {
+        assert!(is_read_only_sql("SELECT 1"));
+        assert!(is_read_only_sql("SELECT 1; SHOW TABLES"));
+        assert!(is_read_only_sql("BEGIN; SELECT 1; COMMIT;"));
+        assert!(is_read_only_sql("EXPLAIN ANALYZE SELECT * FROM t"));
+        assert!(is_read_only_sql("TABLE users"));
+    }
+
+    #[test]
+    fn read_only_sql_rejects_writes() {
+        assert!(!is_read_only_sql("DELETE FROM t"));
+        assert!(!is_read_only_sql("DROP TABLE t"));
+        assert!(!is_read_only_sql("BEGIN; UPDATE t SET a = 1; COMMIT;"));
+        assert!(!is_read_only_sql("SELECT 1; DELETE FROM t"));
+        assert!(!is_read_only_sql("EXPLAIN ANALYZE DELETE FROM t"));
+        assert!(!is_read_only_sql(""));
+    }
+
+    #[test]
+    fn read_only_sql_rejects_data_modifying_ctes() {
+        assert!(is_read_only_sql("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(!is_read_only_sql(
+            "WITH moved AS (DELETE FROM t RETURNING *) SELECT * FROM moved"
+        ));
+        assert!(!is_read_only_sql(
+            "with x as (insert into t values (1) returning *) select * from x"
+        ));
+    }
+
+    #[test]
+    fn redis_read_only_commands_are_detected() {
+        assert!(is_read_only_redis_command("GET user:1"));
+        assert!(is_read_only_redis_command("HGETALL user:1"));
+        assert!(is_read_only_redis_command("GET user:1\nTTL user:1"));
+        assert!(!is_read_only_redis_command("SET user:1 bob"));
+        assert!(!is_read_only_redis_command("DEL user:1"));
+        assert!(!is_read_only_redis_command("FLUSHALL"));
+        assert!(!is_read_only_redis_command(""));
+    }
+}

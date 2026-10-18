@@ -123,7 +123,7 @@ brew install --cask veloxdb
 
 ### Direct Download (macOS, Windows, Linux)
 
-Download pre-built installers for the latest release (**v0.4.0**) on the **[Releases Page](https://github.com/veloxbase/veloxdb/releases)**.
+Download pre-built installers for the latest release (**v0.4.1**) on the **[Releases Page](https://github.com/veloxbase/veloxdb/releases)**.
 
 | Platform | Package | Download Link |
 |----------|---------|---------------|

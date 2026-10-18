@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifySqlIntent, isReadOnlySql } from "@/lib/sql-intent";
+import { classifySqlIntent, isReadOnlyRedisCommand, isReadOnlySql } from "@/lib/sql-intent";
 
 describe("classifySqlIntent", () => {
 	it("recognizes statement kinds", () => {
@@ -10,6 +10,10 @@ describe("classifySqlIntent", () => {
 		expect(classifySqlIntent("UPDATE t SET a = 1")).toBe("update");
 		expect(classifySqlIntent("DELETE FROM t")).toBe("delete");
 		expect(classifySqlIntent("EXPLAIN SELECT 1")).toBe("explain");
+		expect(classifySqlIntent("SHOW TABLES")).toBe("show");
+		expect(classifySqlIntent("DESCRIBE users")).toBe("describe");
+		expect(classifySqlIntent("VALUES (1)")).toBe("values");
+		expect(classifySqlIntent("TABLE users")).toBe("table");
 		expect(classifySqlIntent("DROP TABLE t")).toBe("unknown");
 	});
 });
@@ -19,6 +23,10 @@ describe("isReadOnlySql", () => {
 		expect(isReadOnlySql("SELECT 1")).toBe(true);
 		expect(isReadOnlySql("EXPLAIN ANALYZE SELECT * FROM t")).toBe(true);
 		expect(isReadOnlySql("BEGIN; SELECT 1; COMMIT;")).toBe(true);
+		expect(isReadOnlySql("SHOW TABLES")).toBe(true);
+		expect(isReadOnlySql("DESCRIBE users")).toBe(true);
+		expect(isReadOnlySql("VALUES (1)")).toBe(true);
+		expect(isReadOnlySql("TABLE users")).toBe(true);
 	});
 
 	it("flags writes as not read-only", () => {
@@ -26,7 +34,31 @@ describe("isReadOnlySql", () => {
 		expect(isReadOnlySql("DROP TABLE t")).toBe(false);
 		expect(isReadOnlySql("BEGIN; UPDATE t SET a = 1; COMMIT;")).toBe(false);
 		expect(isReadOnlySql("SELECT 1; DELETE FROM t")).toBe(false);
+		expect(isReadOnlySql("EXPLAIN ANALYZE DELETE FROM t")).toBe(false);
 		expect(isReadOnlySql("")).toBe(false);
+	});
+
+	it("flags data-modifying CTEs as writes", () => {
+		expect(isReadOnlySql("WITH x AS (SELECT 1) SELECT * FROM x")).toBe(true);
+		expect(
+			isReadOnlySql("WITH moved AS (DELETE FROM t RETURNING *) SELECT * FROM moved"),
+		).toBe(false);
+		expect(
+			isReadOnlySql("with x as (insert into t values (1) returning *) select * from x"),
+		).toBe(false);
+	});
+
+	it("treats only read-only Redis commands as read-only", () => {
+		expect(isReadOnlyRedisCommand("GET user:1")).toBe(true);
+		expect(isReadOnlyRedisCommand("HGETALL user:1")).toBe(true);
+		expect(isReadOnlyRedisCommand("GET user:1\nTTL user:1")).toBe(true);
+		expect(isReadOnlyRedisCommand("SET user:1 bob")).toBe(false);
+		expect(isReadOnlyRedisCommand("DEL user:1")).toBe(false);
+		expect(isReadOnlyRedisCommand("FLUSHALL")).toBe(false);
+		expect(isReadOnlyRedisCommand("")).toBe(false);
+		expect(isReadOnlySql("GET user:1", "redis")).toBe(true);
+		expect(isReadOnlySql("SET user:1 bob", "redis")).toBe(false);
+		expect(isReadOnlySql("DEL user:1", "redis")).toBe(false);
 	});
 
 	it("treats all MongoDB queries as read-only", () => {

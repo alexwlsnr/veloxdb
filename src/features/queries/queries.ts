@@ -137,6 +137,7 @@ export type ExplainPlanTabVariables = {
 	connectionId: string;
 	engine: DatabaseEngine;
 	sql: string;
+	allowWrite?: boolean;
 	tabId: string;
 	flightId: number;
 };
@@ -181,9 +182,9 @@ export function useExplainPlanMutation(
 ) {
 	return useMutation({
 		retry: shouldRetryTransientDbInvoke,
-		mutationFn: ({ connectionId, sql, engine }: ExplainPlanTabVariables) => {
+		mutationFn: ({ connectionId, sql, engine, allowWrite }: ExplainPlanTabVariables) => {
 			const body = buildExplainSql(engine, sql);
-			return veloxDbRepository.runQuery({ connectionId, sql: body });
+			return veloxDbRepository.runQuery({ connectionId, sql: body, allowWrite });
 		},
 		onSuccess: (result, variables) => {
 			options.onSuccess?.(result, variables);
