@@ -72,20 +72,16 @@ async fn try_connect(
 }
 
 async fn connect_client(cfg: &MssqlConfig) -> Result<Client<Compat<TcpStream>>, VeloxError> {
-    let level = encryption_level(cfg);
-    match try_connect(cfg, level).await {
-        Ok(client) => Ok(client),
-        // `prefer` means "TLS when the server supports it". tiberius cannot
-        // negotiate that fallback itself, so retry without encryption when the
-        // TLS handshake fails (common on private servers with forceencryption=0).
-        Err(error) if cfg.ssl_mode == ConnectionSslMode::Prefer && !cfg.is_azure => {
-            match try_connect(cfg, EncryptionLevel::NotSupported).await {
-                Ok(client) => Ok(client),
-                Err(_) => Err(error),
-            }
-        }
-        Err(error) => Err(error),
-    }
+    // No silent fallback to `NotSupported` when the TLS handshake fails: that
+    // would send the login, password included, in plaintext. Servers that
+    // can't do TLS need the user to choose `disable` explicitly.
+    try_connect(cfg, encryption_level(cfg)).await.map_err(|error| match (error, cfg.ssl_mode) {
+        (VeloxError::Connection(message), ConnectionSslMode::Prefer) => VeloxError::Connection(format!(
+            "{} (TLS for the login failed; set SSL mode to Disable only if you accept sending the password unencrypted)",
+            message
+        )),
+        (error, _) => error,
+    })
 }
 
 async fn get_or_create_mssql_config(
