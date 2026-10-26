@@ -39,6 +39,7 @@ import type { TableQuickSqlAction } from "@/features/queries/table-quick-actions
 import type { ResultEditPatch } from "@/features/queries/result-edits";
 import { isInsertFormColumn } from "@/features/queries/result-edits";
 import { quoteIdent } from "@/lib/sql-ident";
+import { isReadOnlySql } from "@/lib/sql-intent";
 import { notifyError, notifySuccess } from "@/lib/error-notifier";
 import { fetchTablesPropertiesSql } from "@/features/schema/format-table-properties-sql";
 import { loadOpenRouterApiKey } from "@/lib/openrouter-credentials";
@@ -601,7 +602,9 @@ export function useAppState(
 			});
 			const sql = response.sql.trim();
 			const lower = sql.toLowerCase();
-			const isReadIntent = response.intent === "select";
+			// The model's own intent label is not trusted: the SQL must also pass the
+			// local read-only check, since auto-run skips the write confirmation.
+			const isReadIntent = response.intent === "select" && isReadOnlySql(sql, connection.engine);
 			const isLikelyLarge = sql.length > 1800 || (lower.includes("select") && !lower.includes(" limit ")) || /\bcross\s+join\b|\bpg_sleep\s*\(/i.test(lower);
 			const canAutoRun = isReadIntent && !isLikelyLarge;
 
