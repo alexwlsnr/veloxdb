@@ -399,7 +399,8 @@ pub(crate) async fn fetch_query_editor_metadata_for_connection(
                     name: row.get(1),
                     arg_types: if args_raw.trim().is_empty() { Vec::new() }
                         else { args_raw.split(',').map(|value| value.trim().to_string()).collect() },
-                    return_type: row.get(3),
+                    // pg_get_function_result() is NULL for procedures.
+                    return_type: row.get::<_, Option<String>>(3).unwrap_or_default(),
                 }
             }).collect();
 
