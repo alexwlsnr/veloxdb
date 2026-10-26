@@ -7,7 +7,6 @@
   ],
   "permissions": [
     "core:default",
-    "store:default",
     "dialog:default"
   ]
 }
