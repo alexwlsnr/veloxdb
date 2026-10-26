@@ -137,6 +137,15 @@ fn load_pem_key(path: &str) -> Result<PrivateKeyDer<'static>, VeloxError> {
     Err(VeloxError::Configuration(format!("No private key found in {}", path)))
 }
 
+/// Bundled webpki roots plus the OS trust store, so servers signed by a
+/// corporate/internal CA the system already trusts verify too.
+fn default_root_store() -> rustls::RootCertStore {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    root_store.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    root_store
+}
+
 fn tls_connector_with_params(extra_params: &HashMap<String, String>) -> Result<tokio_postgres_rustls::MakeRustlsConnect, VeloxError> {
     let mut root_store = rustls::RootCertStore::empty();
 
@@ -148,7 +157,7 @@ fn tls_connector_with_params(extra_params: &HashMap<String, String>) -> Result<t
             root_store.add(cert).map_err(|e| format!("Failed to add root cert: {}", e))?;
         }
     } else {
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        root_store = default_root_store();
     }
 
     let config_builder = rustls::ClientConfig::builder()
@@ -175,10 +184,8 @@ fn tls_connector() -> Result<tokio_postgres_rustls::MakeRustlsConnect, VeloxErro
     static CACHE: OnceLock<Result<tokio_postgres_rustls::MakeRustlsConnect, VeloxError>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let mut root_store = rustls::RootCertStore::empty();
-            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             let config = rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
+                .with_root_certificates(default_root_store())
                 .with_no_client_auth();
             Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
         })

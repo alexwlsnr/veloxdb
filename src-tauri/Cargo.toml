@@ -33,6 +33,7 @@ tokio-postgres-rustls = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
+rustls-native-certs = "0.8"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql", "sqlite", "chrono"] }
 urlencoding = "2.1"
 hex = "0.4"
