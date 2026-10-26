@@ -50,7 +50,7 @@ chrono = "0.4.45"
 mongodb = "3"
 bson = "2"
 duckdb = { version = "1", features = ["bundled"] }
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.25", features = ["tokio-comp", "tokio-rustls-comp", "connection-manager"] }
 semver = "1"
 tiberius = { version = "0.12", default-features = false, features = ["tokio-rustls", "chrono", "tds73"] }
 tokio-util = { version = "0.7", features = ["compat"] }
