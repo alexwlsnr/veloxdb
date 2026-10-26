@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type AppTheme = 'system' | 'light' | 'dark' | 'sepia' | 'ocean' | 'forest' | 'rose' | 'slate' | 'amber'
+export type AppTheme = 'system' | 'light' | 'dark' | 'sepia' | 'ocean' | 'forest' | 'rose' | 'slate' | 'amber' | 'mocha'
 export type FontSize = number | 'sm' | 'md' | 'lg'
 export type NullDisplay = 'null' | 'NULL' | 'dash' | 'empty'
 
@@ -87,6 +87,7 @@ export function themeClassName(theme: AppTheme): string | null {
     case 'rose':   return 'theme-rose'
     case 'slate':  return 'theme-slate'
     case 'amber':  return 'theme-amber'
+    case 'mocha':  return 'theme-mocha'
     default:       return null
   }
 }
@@ -101,6 +102,7 @@ export const themeLabels: Record<AppTheme, string> = {
   rose:   'Rose',
   slate:  'Slate',
   amber:  'Amber',
+  mocha:  'Catppuccin Mocha',
 }
 
-export const THEME_CLASSES = ['dark', 'theme-sepia', 'theme-ocean', 'theme-forest', 'theme-rose', 'theme-slate', 'theme-amber'] as const
+export const THEME_CLASSES = ['dark', 'theme-sepia', 'theme-ocean', 'theme-forest', 'theme-rose', 'theme-slate', 'theme-amber', 'theme-mocha'] as const

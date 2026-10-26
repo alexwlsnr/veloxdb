@@ -284,6 +284,40 @@
   --diagram-table-header: oklch(0.18 0.04 65);
 }
 
+/* ── Catppuccin Mocha ── soothing pastel on deep base ────── */
+.theme-mocha {
+  color-scheme: dark;
+  --background: #1e1e2e;          /* base */
+  --foreground: #cdd6f4;          /* text */
+  --card: #313244;                /* surface0 */
+  --card-foreground: #cdd6f4;
+  --popover: #313244;
+  --popover-foreground: #cdd6f4;
+  --primary: #cba6f7;             /* mauve */
+  --primary-foreground: #11111b;  /* crust */
+  --secondary: #313244;
+  --secondary-foreground: #cdd6f4;
+  --muted: #313244;
+  --muted-foreground: #a6adc8;    /* subtext0 */
+  --accent: #45475a;              /* surface1 */
+  --accent-foreground: #cdd6f4;
+  --destructive: #f38ba8;         /* red */
+  --border: #45475a;
+  --input: #45475a;
+  --ring: #b4befe;                /* lavender */
+  --sidebar: #181825;             /* mantle */
+  --sidebar-foreground: #cdd6f4;
+  --sidebar-primary: #cba6f7;
+  --sidebar-primary-foreground: #11111b;
+  --sidebar-accent: #313244;
+  --sidebar-accent-foreground: #cdd6f4;
+  --sidebar-border: #313244;
+  --sidebar-ring: #b4befe;
+  --control-accent: #cba6f7;
+  --control-accent-muted: rgb(203 166 247 / 18%);
+  --diagram-table-header: #313244;
+}
+
 @theme inline {
   --font-mono: "JetBrains Mono", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
